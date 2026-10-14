@@ -26,19 +26,6 @@ function serializeCli(operation) {
   return result;
 }
 
-function constantTimeEqual(left, right) {
-  const a = Buffer.from(left || "");
-  const b = Buffer.from(right || "");
-  return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
-}
-
-function authorize(req) {
-  const expected = process.env.MCP_AUTH_TOKEN;
-  const header = req.get("authorization") || "";
-  const match = /^Bearer\s+(.+)$/i.exec(header);
-  return Boolean(expected && match && constantTimeEqual(match[1].trim(), expected));
-}
-
 function validateProjectApiKey(value) {
   const key = String(value || "").trim();
   if (key.length < 8 || key.length > 500 || /\s/.test(key)) {
@@ -153,7 +140,6 @@ async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutM
   ]);
 
   const env = { ...process.env };
-  delete env.MCP_AUTH_TOKEN;
   delete env.FRAMER_API_KEY;
   Object.assign(env, {
     HOME: path.join(STATE_ROOT, "home"),
@@ -182,7 +168,7 @@ const toolDefinitions = [
   {
     name: "framer_project_auth",
     title: "Authorize a Framer project",
-    description: "Save this thread's Framer project credentials on the hosted CLI using the project's own API key. Create a new thread for each project, then call this once with that project's URL and API key (Site Settings → General → API Keys). Later calls in the same thread can omit projectApiKey.",
+    description: "Save this thread's Framer project credentials on the hosted CLI using the project's own API key. Create a new thread for each project, then call this once with that project's URL and key (Site Settings → General → API Keys). Later calls in the same thread can omit projectApiKey.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500),
       projectApiKey: z.string().min(8).max(500),
@@ -208,7 +194,6 @@ const toolDefinitions = [
         fs.mkdir(workDir, { recursive: true, mode: 0o700 }),
       ]);
       const env = { ...process.env, HOME: path.join(STATE_ROOT, "home"), XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: stateHome, NO_COLOR: "1" };
-      delete env.MCP_AUTH_TOKEN;
       delete env.FRAMER_API_KEY;
       await fs.mkdir(env.HOME, { recursive: true, mode: 0o700 });
       const output = await serializeCli(() => runCli(["project", "auth", projectRef, apiKey], {
@@ -355,7 +340,6 @@ const toolDefinitions = [
         fs.mkdir(workDir, { recursive: true, mode: 0o700 }),
       ]);
       const env = { ...process.env, HOME: path.join(STATE_ROOT, "home"), XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: stateHome, NO_COLOR: "1" };
-      delete env.MCP_AUTH_TOKEN;
       delete env.FRAMER_API_KEY;
       await fs.mkdir(env.HOME, { recursive: true, mode: 0o700 });
       return serializeCli(async () => {
@@ -383,10 +367,6 @@ function toolList() {
 }
 
 async function handleMcp(req, res) {
-  if (!authorize(req)) {
-    res.set("WWW-Authenticate", "Bearer");
-    return res.status(401).json({ error: "Unauthorized" });
-  }
   const body = req.body;
   if (!body || Array.isArray(body) || typeof body !== "object" || body.jsonrpc !== "2.0" || typeof body.method !== "string") {
     return res.status(400).json(jsonRpcError(body?.id, -32700, "Invalid JSON-RPC request."));

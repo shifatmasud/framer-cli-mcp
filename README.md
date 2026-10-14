@@ -6,12 +6,11 @@ A remote Streamable HTTP MCP server that invokes Framer's official `@framer/agen
 
 Set these in the Render service's environment settings; do not commit them:
 
-- `MCP_AUTH_TOKEN`: a long random bearer token used by Upsy to authenticate to `/mcp`.
 - `FRAMER_API_KEY` (optional): a default project API key, only if every call targets one project.
 - `FRAMER_PROJECT_URL` (optional): default project URL/ID for tool calls in a single-project setup.
 - `PORT`: Render provides this; the image defaults to `10000`.
 
-The MCP endpoint is `https://<service>.onrender.com/mcp`; health is available at `/healthz`. Send `Authorization: Bearer <MCP_AUTH_TOKEN>` on MCP requests. Each Framer project key is passed per thread and is kept separate from the MCP endpoint token.
+The MCP endpoint is `https://<service>.onrender.com/mcp`; health is available at `/healthz`. No bearer token is required. Each Framer project key is passed per thread through `framer_project_auth` or the tool's `projectApiKey` argument.
 
 ## Per-project setup
 
@@ -40,7 +39,7 @@ The CLI is run as a subprocess, arguments are passed without a shell, tool outpu
 
 ```sh
 npm ci
-MCP_AUTH_TOKEN=local-test FRAMER_API_KEY=your-local-test-key npm start
+FRAMER_API_KEY=your-local-test-key npm start
 ```
 
-The health route is public. MCP requests require the bearer token. Never put real keys in shell history or commit them.
+The health route and MCP endpoint have no bearer token. Never put real keys in shell history or commit them.
