@@ -33,6 +33,10 @@ Then authorize that project once in the thread:
 - `framer_read_project`: query supported project data.
 - `framer_session_destroy`: destroy a session.
 
+## Agent skill
+
+Usage instructions live in [`skill/framer-cli-mcp/SKILL.md`](skill/framer-cli-mcp/SKILL.md), with deployment details in `skill/framer-cli-mcp/references/hosting.md` and tool guidance in `skill/framer-cli-mcp/references/framer-tools.md`.
+
 The CLI is run as a subprocess, arguments are passed without a shell, tool output redacts the configured Framer API key, and CLI operations are serialized to avoid relay startup races. The project auth file is stored under the container's ephemeral `/tmp` directory with restrictive permissions. Render Free services may sleep after inactivity and lose their local filesystem; on a fresh instance the CLI relay is recreated as needed.
 
 ## Local development
