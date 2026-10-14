@@ -128,6 +128,17 @@ function runCli(args, { env, cwd, secrets = [], timeoutMs = CLI_TIMEOUT_MS }) {
   });
 }
 
+async function ensureFramerSkills(env, workDir) {
+  const skillsDir = path.join(env.HOME, ".agents", "skills", "framer");
+  try {
+    await fs.access(skillsDir);
+    return;
+  } catch {
+    // Render's ephemeral filesystem resets lose installed skills; reinstall silently.
+  }
+  await runCli(["setup"], { env, cwd: workDir, timeoutMs: 120_000 });
+}
+
 async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutMs = CLI_TIMEOUT_MS) {
   const projectRef = validateProjectRef(projectRefInput || process.env.FRAMER_PROJECT_URL);
   const apiKey = validateProjectApiKey(projectApiKeyInput ?? defaultApiKey());
@@ -157,6 +168,7 @@ async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutM
       secrets: [apiKey],
       timeoutMs: 30_000,
     });
+    await ensureFramerSkills(env, workDir);
     return runCli(args, { env, cwd: workDir, secrets: [apiKey], timeoutMs });
   });
 }
