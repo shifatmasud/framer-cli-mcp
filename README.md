@@ -64,12 +64,15 @@ Inline-key fallback for any tool (for example after a Render restart):
 
 ## Tools
 
+- `framer_setup_guide`: returns the per-project setup script any agent should follow before asking for credentials.
 - `framer_project_auth`: authorize this thread's project with its own API key.
 - `framer_session_new`: create a session for a project.
 - `framer_exec`: run JavaScript through the Framer agent's generic CLI `exec` command.
 - `framer_apply_changes`: apply canvas DSL to a page.
 - `framer_read_project`: query supported project data.
 - `framer_session_destroy`: destroy a session.
+
+The server is self-describing: MCP `initialize`, `/`, and `/healthz` all advertise `firstTool: framer_setup_guide` plus the setup guide. Missing project URLs or API keys return the same guide instead of a bare validation error.
 
 ## Agent skill
 

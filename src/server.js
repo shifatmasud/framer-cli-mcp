@@ -30,8 +30,7 @@ function validateProjectApiKey(value) {
   const key = String(value || "").trim();
   if (key.length < 8 || key.length > 500 || /\s/.test(key)) {
     throw new Error(
-      "Provide this project's Framer API key (Site Settings → General → API Keys). " +
-      "Create a new thread for each project, then run framer_project_auth with that project's URL and key."
+      `${SETUP_GUIDE}\n\nMissing or invalid projectApiKey. Call framer_setup_guide, ask the user for this thread's project link and API key, then run framer_project_auth with:\n${AUTH_EXAMPLE}`
     );
   }
   return key;
@@ -45,7 +44,9 @@ function defaultApiKey() {
 function validateProjectRef(value) {
   const projectRef = String(value || "").trim();
   if (!projectRef || projectRef.length > 500) {
-    throw new Error("Provide a Framer project URL or project ID.");
+    throw new Error(
+      `${SETUP_GUIDE}\n\nMissing projectUrlOrId. Ask the user for this thread's project link, then continue with framer_project_auth.`
+    );
   }
   if (/^[A-Za-z0-9_-]{6,160}$/.test(projectRef) && !projectRef.startsWith("-")) {
     return projectRef;
@@ -164,11 +165,38 @@ function resultText(text, isError = false) {
   return { content: [{ type: "text", text: String(text) }], ...(isError ? { isError: true } : {}) };
 }
 
+const SETUP_GUIDE = [
+  "Per-project setup (one thread per Framer project):",
+  "1. Create a new thread for this project.",
+  "2. Ask the user for this thread's project link: browser address bar, or app right-click project tab → Copy Project Link.",
+  "3. Ask the user for this project's API key: Site Settings → General → API Keys.",
+  "4. Call framer_project_auth once with that thread's projectUrlOrId and projectApiKey.",
+  "5. Call framer_session_new once and reuse its sessionId for the whole thread.",
+  "If the Render free instance restarted, call framer_project_auth again for that thread.",
+].join("\n");
+
+const AUTH_EXAMPLE = JSON.stringify(
+  {
+    projectUrlOrId: "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123",
+    projectApiKey: "PASTE_THIS_PROJECTS_API_KEY",
+  },
+  null,
+  2
+);
+
 const toolDefinitions = [
+  {
+    name: "framer_setup_guide",
+    title: "Show per-project setup guide",
+    description: "Show any agent how to guide a user through per-project setup: new thread per project, project link, project API key, framer_project_auth, then framer_session_new. Call this before asking the user for credentials.",
+    schema: z.object({}).strict(),
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    run: async () => `${SETUP_GUIDE}\n\nframer_project_auth example:\n${AUTH_EXAMPLE}`,
+  },
   {
     name: "framer_project_auth",
     title: "Authorize a Framer project",
-    description: "Save this thread's Framer project credentials on the hosted CLI using the project's own API key. Create a new thread for each project, then call this once with that project's URL and key (Site Settings → General → API Keys). Later calls in the same thread can omit projectApiKey.",
+    description: "STEP 1 for any new project thread. Save this thread's Framer project credentials on the hosted CLI using the project's own API key. Guide the user first: new thread per project; project link from browser address bar or app right-click → Copy Project Link; API key from Site Settings → General → API Keys. Then call this once with that thread's projectUrlOrId and projectApiKey. Later calls in the same thread can omit projectApiKey. Example: {\"projectUrlOrId\": \"https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123\", \"projectApiKey\": \"PASTE_THIS_PROJECTS_API_KEY\"}.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500),
       projectApiKey: z.string().min(8).max(500),
@@ -176,8 +204,8 @@ const toolDefinitions = [
     inputSchema: {
       type: "object",
       properties: {
-        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID." },
-        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key from Site Settings → General → API Keys." },
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID. Ask the user: browser address bar, or app right-click project tab → Copy Project Link." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key from Site Settings → General → API Keys. Example: PASTE_THIS_PROJECTS_API_KEY." },
       },
       required: ["projectUrlOrId", "projectApiKey"],
       additionalProperties: false,
@@ -208,7 +236,7 @@ const toolDefinitions = [
   {
     name: "framer_session_new",
     title: "Create Framer agent session",
-    description: "Create a session for this thread's Framer project using the official @framer/agent CLI. Authorize the project first with framer_project_auth, or pass this project's API key. The session ID can be used with the other Framer tools.",
+    description: "STEP 2 for any new project thread. Create one reusable session for this thread's Framer project using the official @framer/agent CLI. Authorize the project first with framer_project_auth, or pass this thread's projectApiKey inline. Reuse the returned sessionId for every later tool call in the thread; do not create replacement sessions.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500).optional(),
       projectApiKey: z.string().min(8).max(500).optional(),
@@ -216,8 +244,8 @@ const toolDefinitions = [
     inputSchema: {
       type: "object",
       properties: {
-        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
-        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured. If the user has not authorized this project yet, guide them with framer_setup_guide first." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This thread's project API key. Required unless framer_project_auth was already called for it in this thread." },
       },
       additionalProperties: false,
     },
@@ -381,7 +409,9 @@ async function handleMcp(req, res) {
       result: {
         protocolVersion: supportedVersion(body, req),
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "framer-cli-remote", version: "1.0.0" },
+        serverInfo: { name: "framer-cli-remote", version: "1.1.0" },
+        setupGuide: SETUP_GUIDE,
+        firstTool: "framer_setup_guide",
       },
     });
   }
@@ -420,8 +450,8 @@ async function handleMcp(req, res) {
 const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb", strict: true }));
-app.get("/", (_req, res) => res.status(200).json({ ok: true, service: "framer-cli-mcp" }));
-app.get("/healthz", (_req, res) => res.status(200).json({ ok: true, service: "framer-cli-mcp" }));
+app.get("/", (_req, res) => res.status(200).json({ ok: true, service: "framer-cli-mcp", setupGuide: SETUP_GUIDE, firstTool: "framer_setup_guide" }));
+app.get("/healthz", (_req, res) => res.status(200).json({ ok: true, service: "framer-cli-mcp", setupGuide: SETUP_GUIDE, firstTool: "framer_setup_guide" }));
 app.post("/mcp", (req, res) => void handleMcp(req, res));
 app.all("/mcp", (_req, res) => res.status(405).json({ error: "Use POST /mcp." }));
 app.use((_req, res) => res.status(404).json({ error: "Not found." }));

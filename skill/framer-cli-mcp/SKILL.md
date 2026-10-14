@@ -31,11 +31,12 @@ Never reuse one thread, session, or API key across different Framer projects. If
 
 ## Workflow
 
-1. Authorize the thread's project with `framer_project_auth`.
-2. Create one session with `framer_session_new` and reuse its session ID for the whole thread.
-3. For details on methods, queries, DSL shape, and safety rules, read [Framer tool reference](references/framer-tools.md).
-4. For deployment, hosting, environment variables, and troubleshooting, read [hosting reference](references/hosting.md).
-5. Destroy the session with `framer_session_destroy` only when the thread's Framer work is finished.
+1. Call `framer_setup_guide` and follow its per-project script before asking for credentials.
+2. Authorize the thread's project with `framer_project_auth`.
+3. Create one session with `framer_session_new` and reuse its session ID for the whole thread.
+4. For details on methods, queries, DSL shape, and safety rules, read [Framer tool reference](references/framer-tools.md).
+5. For deployment, hosting, environment variables, and troubleshooting, read [hosting reference](references/hosting.md).
+6. Destroy the session with `framer_session_destroy` only when the thread's Framer work is finished.
 
 ## Authentication Example
 
@@ -58,6 +59,7 @@ Expected result: the hosted CLI saves that project's credential (equivalent to `
 
 ## Tool Selection
 
+- `framer_setup_guide`: read the server's per-project setup script first.
 - `framer_project_auth`: authorize this thread's project before any other tool.
 - `framer_session_new`: create the thread's reusable session.
 - `framer_exec`: run JavaScript through the Framer agent when no narrower tool fits.
