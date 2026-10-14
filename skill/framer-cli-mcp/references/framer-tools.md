@@ -9,6 +9,36 @@ Read this before executing Framer work through `framer-cli-mcp`.
 - Do not create replacement sessions for follow-ups; a new session can lose state or create another branch when auto-branching is enabled.
 - Call `framer_session_destroy` only when the thread's Framer work is complete.
 
+## Authentication Examples
+
+Authorize once per thread. This mirrors the official `project auth <projectUrlOrId> <apiKey>` flow, where the key comes from that project's Site Settings → General → API Keys.
+
+```json
+{
+  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123",
+  "projectApiKey": "PASTE_THIS_PROJECTS_API_KEY"
+}
+```
+
+After that succeeds, omit `projectApiKey` in the same thread:
+
+```json
+{
+  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123"
+}
+```
+
+If the thread was never authorized (or the Render instance restarted), pass the key inline instead:
+
+```json
+{
+  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123",
+  "projectApiKey": "PASTE_THIS_PROJECTS_API_KEY",
+  "sessionId": "PASTE_SESSION_ID",
+  "code": "console.log(await framer.getProjectInfo())"
+}
+```
+
 ## Method Selection
 
 Prefer agent-level canvas operations over low-level node APIs:

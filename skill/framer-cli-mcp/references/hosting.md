@@ -24,7 +24,7 @@ The normal multi-project flow passes each thread's project key through `framer_p
 
 ## Deploy Flow
 
-- Pushes to `main` auto-deploy the Render service.
+- Auto-deploy is enabled: every commit pushed to `main` auto-deploys the Render service (`autoDeploy: yes`, trigger: commit, branch: `main`).
 - Environment-variable changes trigger a separate deploy.
 - Verify with `/healthz`, then unauthenticated `tools/list` on `/mcp`.
 - Expected tools: `framer_project_auth`, `framer_session_new`, `framer_exec`, `framer_apply_changes`, `framer_read_project`, `framer_session_destroy`.

@@ -13,6 +13,8 @@ Endpoint: `https://framer-cli-mcp.onrender.com/mcp`
 Health: `https://framer-cli-mcp.onrender.com/healthz`
 No bearer token is required.
 
+About this server: official `@framer/agent` CLI v0.0.46 on Node 24 in Docker; stateless Streamable HTTP MCP endpoint; per-project API keys (no shared server key); CLI runs as a shell-free subprocess with serialized calls; project credentials live in ephemeral `/tmp` with restrictive permissions; Render Free plan in Singapore (sleeps when idle, filesystem resets on restart); source and skill hosted at `https://github.com/shifatmasud/framer-cli-mcp`; every push to `main` auto-deploys to Render.
+
 ## Per-Project Rule
 
 Each thread handles exactly one Framer project.
@@ -34,6 +36,25 @@ Never reuse one thread, session, or API key across different Framer projects. If
 3. For details on methods, queries, DSL shape, and safety rules, read [Framer tool reference](references/framer-tools.md).
 4. For deployment, hosting, environment variables, and troubleshooting, read [hosting reference](references/hosting.md).
 5. Destroy the session with `framer_session_destroy` only when the thread's Framer work is finished.
+
+## Authentication Example
+
+Call `framer_project_auth` first in every thread. Replace the placeholders with that thread's project link and that project's key from Site Settings → General → API Keys.
+
+```json
+{
+  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123",
+  "projectApiKey": "PASTE_THIS_PROJECTS_API_KEY"
+}
+```
+
+Expected result: the hosted CLI saves that project's credential (equivalent to `project auth <projectUrlOrId> <apiKey>`), so later calls in the same thread can omit `projectApiKey`. Then create the reusable session:
+
+```json
+{
+  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123"
+}
+```
 
 ## Tool Selection
 
