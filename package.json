@@ -1,0 +1,19 @@
+{
+  "name": "framer-cli-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote MCP wrapper for the official Framer External Agent CLI",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "dependencies": {
+    "@framer/agent": "0.0.46",
+    "express": "5.3.0",
+    "zod": "4.6.7"
+  }
+}
