@@ -39,12 +39,20 @@ function authorize(req) {
   return Boolean(expected && match && constantTimeEqual(match[1].trim(), expected));
 }
 
-function getApiKey() {
-  const key = process.env.FRAMER_API_KEY;
-  if (!key || key.trim().length < 8) {
-    throw new Error("FRAMER_API_KEY is not configured on the Render service.");
+function validateProjectApiKey(value) {
+  const key = String(value || "").trim();
+  if (key.length < 8 || key.length > 500 || /\s/.test(key)) {
+    throw new Error(
+      "Provide this project's Framer API key (Site Settings → General → API Keys). " +
+      "Create a new thread for each project, then run framer_project_auth with that project's URL and key."
+    );
   }
-  return key.trim();
+  return key;
+}
+
+function defaultApiKey() {
+  const key = String(process.env.FRAMER_API_KEY || "").trim();
+  return key || undefined;
 }
 
 function validateProjectRef(value) {
@@ -132,9 +140,9 @@ function runCli(args, { env, cwd, secrets = [], timeoutMs = CLI_TIMEOUT_MS }) {
   });
 }
 
-async function executeFramer(projectRefInput, args, timeoutMs = CLI_TIMEOUT_MS) {
+async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutMs = CLI_TIMEOUT_MS) {
   const projectRef = validateProjectRef(projectRefInput || process.env.FRAMER_PROJECT_URL);
-  const apiKey = getApiKey();
+  const apiKey = validateProjectApiKey(projectApiKeyInput ?? defaultApiKey());
   const configHome = path.join(STATE_ROOT, "config");
   const stateHome = path.join(STATE_ROOT, "state");
   const workDir = path.join(STATE_ROOT, "work", crypto.createHash("sha256").update(projectRef).digest("hex").slice(0, 20));
@@ -172,18 +180,65 @@ function resultText(text, isError = false) {
 
 const toolDefinitions = [
   {
-    name: "framer_session_new",
-    title: "Create Framer agent session",
-    description: "Create a session for an authorized Framer project using the official @framer/agent CLI. The session ID can be used with the other Framer tools.",
-    schema: z.object({ projectUrlOrId: z.string().min(1).max(500).optional() }).strict(),
+    name: "framer_project_auth",
+    title: "Authorize a Framer project",
+    description: "Save this thread's Framer project credentials on the hosted CLI using the project's own API key. Create a new thread for each project, then call this once with that project's URL and API key (Site Settings → General → API Keys). Later calls in the same thread can omit projectApiKey.",
+    schema: z.object({
+      projectUrlOrId: z.string().min(1).max(500),
+      projectApiKey: z.string().min(8).max(500),
+    }).strict(),
     inputSchema: {
       type: "object",
-      properties: { projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." } },
+      properties: {
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key from Site Settings → General → API Keys." },
+      },
+      required: ["projectUrlOrId", "projectApiKey"],
       additionalProperties: false,
     },
-    run: async ({ projectUrlOrId }) => {
+    run: async ({ projectUrlOrId, projectApiKey }) => {
+      const projectRef = validateProjectRef(projectUrlOrId);
+      const apiKey = validateProjectApiKey(projectApiKey);
+      const configHome = path.join(STATE_ROOT, "config");
+      const stateHome = path.join(STATE_ROOT, "state");
+      const workDir = path.join(STATE_ROOT, "work", crypto.createHash("sha256").update(projectRef).digest("hex").slice(0, 20));
+      await Promise.all([
+        fs.mkdir(configHome, { recursive: true, mode: 0o700 }),
+        fs.mkdir(stateHome, { recursive: true, mode: 0o700 }),
+        fs.mkdir(workDir, { recursive: true, mode: 0o700 }),
+      ]);
+      const env = { ...process.env, HOME: path.join(STATE_ROOT, "home"), XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: stateHome, NO_COLOR: "1" };
+      delete env.MCP_AUTH_TOKEN;
+      delete env.FRAMER_API_KEY;
+      await fs.mkdir(env.HOME, { recursive: true, mode: 0o700 });
+      const output = await serializeCli(() => runCli(["project", "auth", projectRef, apiKey], {
+        env,
+        cwd: workDir,
+        secrets: [apiKey],
+        timeoutMs: 30_000,
+      }));
+      return output || `Project ${projectRef} authorized for this thread.`;
+    },
+  },
+  {
+    name: "framer_session_new",
+    title: "Create Framer agent session",
+    description: "Create a session for this thread's Framer project using the official @framer/agent CLI. Authorize the project first with framer_project_auth, or pass this project's API key. The session ID can be used with the other Framer tools.",
+    schema: z.object({
+      projectUrlOrId: z.string().min(1).max(500).optional(),
+      projectApiKey: z.string().min(8).max(500).optional(),
+    }).strict(),
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
+      },
+      additionalProperties: false,
+    },
+    run: async ({ projectUrlOrId, projectApiKey }) => {
       const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
-      const output = await executeFramer(projectRef, ["session", "new", projectRef]);
+      const output = await executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["session", "new", projectRef]);
       const sessionId = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse()
         .find((line) => /^[A-Za-z0-9_-]{8,160}$/.test(line));
       if (!sessionId) throw new Error(`The CLI ran but its session ID could not be parsed. Output: ${output.slice(-2000)}`);
@@ -193,25 +248,27 @@ const toolDefinitions = [
   {
     name: "framer_exec",
     title: "Execute code in a Framer session",
-    description: "Run JavaScript in a Framer agent session via the official Framer CLI's generic exec command. This exposes the full Framer agent API available to the authenticated project. Only execute code against projects you are authorized to edit.",
+    description: "Run JavaScript in a Framer agent session via the official Framer CLI's generic exec command. This exposes the full Framer agent API available to this thread's authorized project. Only execute code against projects you are authorized to edit.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500).optional(),
+      projectApiKey: z.string().min(8).max(500).optional(),
       sessionId: z.string().min(8).max(160),
       code: z.string().min(1).max(MAX_CODE_CHARS),
     }).strict(),
     inputSchema: {
       type: "object",
       properties: {
-        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
         sessionId: { type: "string", minLength: 8, maxLength: 160 },
         code: { type: "string", minLength: 1, maxLength: MAX_CODE_CHARS, description: "JavaScript code to execute through the Framer agent." },
       },
       required: ["sessionId", "code"],
       additionalProperties: false,
     },
-    run: async ({ projectUrlOrId, sessionId, code }) => {
+    run: async ({ projectUrlOrId, projectApiKey, sessionId, code }) => {
       const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
-      return executeFramer(projectRef, ["exec", "--session", validateSessionId(sessionId), "--eval", code]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["exec", "--session", validateSessionId(sessionId), "--eval", code]);
     },
   },
   {
@@ -220,6 +277,7 @@ const toolDefinitions = [
     description: "Apply Framer canvas DSL changes to a page through the official Framer CLI.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500).optional(),
+      projectApiKey: z.string().min(8).max(500).optional(),
       sessionId: z.string().min(8).max(160),
       dsl: z.string().min(1).max(MAX_CODE_CHARS),
       pagePath: z.string().min(1).max(2048).optional(),
@@ -227,7 +285,8 @@ const toolDefinitions = [
     inputSchema: {
       type: "object",
       properties: {
-        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
         sessionId: { type: "string", minLength: 8, maxLength: 160 },
         dsl: { type: "string", minLength: 1, maxLength: MAX_CODE_CHARS },
         pagePath: { type: "string", minLength: 1, maxLength: 2048, description: "Target page path; defaults to '/'." },
@@ -235,9 +294,9 @@ const toolDefinitions = [
       required: ["sessionId", "dsl"],
       additionalProperties: false,
     },
-    run: async ({ projectUrlOrId, sessionId, dsl, pagePath }) => {
+    run: async ({ projectUrlOrId, projectApiKey, sessionId, dsl, pagePath }) => {
       const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
-      return executeFramer(projectRef, ["apply-changes", "--session", validateSessionId(sessionId), "--eval", dsl, "--page", pagePath || "/"]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["apply-changes", "--session", validateSessionId(sessionId), "--eval", dsl, "--page", pagePath || "/"]);
     },
   },
   {
@@ -246,6 +305,7 @@ const toolDefinitions = [
     description: "Run supported Framer project queries (such as fonts, guides, or screenshots) through the official Framer CLI.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500).optional(),
+      projectApiKey: z.string().min(8).max(500).optional(),
       sessionId: z.string().min(8).max(160),
       queries: z.string().min(2).max(50_000),
       pagePath: z.string().min(1).max(2048).optional(),
@@ -253,7 +313,8 @@ const toolDefinitions = [
     inputSchema: {
       type: "object",
       properties: {
-        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
         sessionId: { type: "string", minLength: 8, maxLength: 160 },
         queries: { type: "string", minLength: 2, maxLength: 50_000, description: "JSON array of Framer project query objects." },
         pagePath: { type: "string", minLength: 1, maxLength: 2048, description: "Target page path; defaults to '/'." },
@@ -261,7 +322,7 @@ const toolDefinitions = [
       required: ["sessionId", "queries"],
       additionalProperties: false,
     },
-    run: async ({ projectUrlOrId, sessionId, queries, pagePath }) => {
+    run: async ({ projectUrlOrId, projectApiKey, sessionId, queries, pagePath }) => {
       const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
       let parsed;
       try {
@@ -270,7 +331,7 @@ const toolDefinitions = [
         throw new Error("queries must be valid JSON.");
       }
       if (!Array.isArray(parsed)) throw new Error("queries must be a JSON array.");
-      return executeFramer(projectRef, ["read-project", "--session", validateSessionId(sessionId), "--queries", JSON.stringify(parsed), "--page", pagePath || "/"]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["read-project", "--session", validateSessionId(sessionId), "--queries", JSON.stringify(parsed), "--page", pagePath || "/"]);
     },
   },
   {
@@ -285,7 +346,6 @@ const toolDefinitions = [
       additionalProperties: false,
     },
     run: async ({ sessionId }) => {
-      const apiKey = getApiKey();
       const configHome = path.join(STATE_ROOT, "config");
       const stateHome = path.join(STATE_ROOT, "state");
       const workDir = path.join(STATE_ROOT, "work");
@@ -299,7 +359,7 @@ const toolDefinitions = [
       delete env.FRAMER_API_KEY;
       await fs.mkdir(env.HOME, { recursive: true, mode: 0o700 });
       return serializeCli(async () => {
-        const output = await runCli(["session", "destroy", validateSessionId(sessionId)], { env, cwd: workDir, secrets: [apiKey] });
+        const output = await runCli(["session", "destroy", validateSessionId(sessionId)], { env, cwd: workDir });
         return output || `Session ${sessionId} destroyed.`;
       });
     },

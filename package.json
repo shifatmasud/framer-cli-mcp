@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Remote MCP wrapper for the official Framer External Agent CLI",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "start": "node src/server.js",
