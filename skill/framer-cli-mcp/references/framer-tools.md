@@ -4,10 +4,11 @@ Read this before executing Framer work through `framer-cli-mcp`.
 
 ## Session Lifecycle
 
-- Call `framer_project_auth` once per thread with that thread's project URL/ID and project API key.
-- Call `framer_session_new` once, then reuse the returned `sessionId` for every later tool call in the thread.
+- Call `framer_project_auth` once per project thread with that thread's project URL/ID and project API key; it returns a random, one-use `authHandle` valid for 15 minutes.
+- Pass `authHandle` to `framer_session_new` once. Reuse the returned random `sessionId` for later tool calls; session-bound calls can omit both `projectApiKey` and `projectUrlOrId`.
 - Do not create replacement sessions for follow-ups; a new session can lose state or create another branch when auto-branching is enabled.
 - Call `framer_session_destroy` only when the thread's Framer work is complete.
+- The handle and session mapping live in the hosted process memory. If Render restarts, reauthorize and create a new session.
 
 ## Authentication Examples
 
@@ -20,15 +21,17 @@ Authorize once per thread. This mirrors the official `project auth <projectUrlOr
 }
 ```
 
-After that succeeds, omit `projectApiKey` in the same thread:
+The auth call returns an `authHandle`. Pass it to session creation:
 
 ```json
 {
-  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123"
+  "authHandle": "PASTE_AUTH_HANDLE_RETURNED_BY_FRAMER_PROJECT_AUTH"
 }
 ```
 
-If the thread was never authorized (or the Render instance restarted), pass the key inline instead:
+Then use only the returned `sessionId` for session-bound calls. It is an unguessable bearer capability, bound to that project; keep it private.
+
+For session creation without an authHandle, pass the project key inline. For a new session after a Render restart, rerun `framer_project_auth` to receive a fresh authHandle:
 
 ```json
 {

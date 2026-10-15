@@ -15,10 +15,14 @@ const STATE_ROOT = process.env.FRAMER_STATE_DIR || path.join(os.tmpdir(), "frame
 const MAX_CODE_CHARS = 100_000;
 const MAX_OUTPUT_CHARS = 200_000;
 const CLI_TIMEOUT_MS = 240_000;
+const AUTH_HANDLE_TTL_MS = 15 * 60 * 1000;
+const MAX_AUTH_HANDLES = 512;
 const DEFAULT_PROTOCOL_VERSION = "2025-03-26";
 const SUPPORTED_PROTOCOL_VERSIONS = new Set(["2024-11-05", "2025-03-26", "2025-11-25"]);
 
 let cliQueue = Promise.resolve();
+const projectAuthHandles = new Map();
+const sessionIdAliases = new Map();
 
 function serializeCli(operation) {
   const result = cliQueue.then(operation, operation);
@@ -72,41 +76,64 @@ function validateSessionId(value) {
   return sessionId;
 }
 
-// The relay assigns short session IDs (e.g. "1"), but MCP clients validate
-// sessionId with a minimum length of 8. Issue a stable >=8-char alias per
-// session and map it back to the relay ID for CLI calls.
-const sessionIdAliases = new Map();
-
 function toClientSessionId(relaySessionId, projectRef) {
   const id = String(relaySessionId || "").trim();
-  if (/^[A-Za-z0-9_-]{8,160}$/.test(id) && !id.startsWith("-")) {
-    sessionIdAliases.set(id, { relayId: id, projectRef });
-    return id;
-  }
-  // Do not expose the relay's short, often sequential IDs as bearer tokens.
+  // The alias is also a bearer capability for keyless operations, so make it
+  // unpredictable even when the upstream relay ID is already long enough.
   const alias = `sess_${crypto.randomBytes(16).toString("hex")}`;
   sessionIdAliases.set(alias, { relayId: id, projectRef });
   return alias;
 }
 
-function resolveSessionId(value) {
+function getSessionContext(value) {
   const sessionId = validateSessionId(value);
-  return sessionIdAliases.get(sessionId)?.relayId || sessionId;
+  const session = sessionIdAliases.get(sessionId);
+  if (!session) {
+    throw new Error("Unknown or expired Framer session. Reauthorize the project and create a new session.");
+  }
+  return session;
 }
 
-// Later calls in a thread may omit projectUrlOrId; the session knows its project.
-function projectForSession(value) {
-  const sessionId = validateSessionId(value);
-  return sessionIdAliases.get(sessionId)?.projectRef;
+function resolveSessionId(value) {
+  return getSessionContext(value).relayId;
 }
 
 function projectRefForSession(sessionId, requestedProjectRef) {
-  const boundProjectRef = projectForSession(sessionId);
-  const projectRef = validateProjectRef(requestedProjectRef || boundProjectRef || process.env.FRAMER_PROJECT_URL);
-  if (boundProjectRef && projectRef !== boundProjectRef) {
+  const boundProjectRef = getSessionContext(sessionId).projectRef;
+  const projectRef = validateProjectRef(requestedProjectRef || boundProjectRef);
+  if (projectRef !== boundProjectRef) {
     throw new Error("This session is bound to a different Framer project.");
   }
   return projectRef;
+}
+
+function issueProjectAuthHandle(projectRef) {
+  const now = Date.now();
+  for (const [handle, record] of projectAuthHandles) {
+    if (record.expiresAt <= now) projectAuthHandles.delete(handle);
+  }
+  while (projectAuthHandles.size >= MAX_AUTH_HANDLES) {
+    const oldestHandle = projectAuthHandles.keys().next().value;
+    if (!oldestHandle) break;
+    projectAuthHandles.delete(oldestHandle);
+  }
+  const authHandle = `auth_${crypto.randomBytes(32).toString("hex")}`;
+  projectAuthHandles.set(authHandle, { projectRef, expiresAt: now + AUTH_HANDLE_TTL_MS });
+  return authHandle;
+}
+
+function consumeProjectAuthHandle(value, requestedProjectRef) {
+  const authHandle = String(value || "").trim();
+  const record = projectAuthHandles.get(authHandle);
+  if (!record || record.expiresAt <= Date.now()) {
+    projectAuthHandles.delete(authHandle);
+    throw new Error("Missing, expired, or invalid authHandle. Run framer_project_auth again.");
+  }
+  if (requestedProjectRef && validateProjectRef(requestedProjectRef) !== record.projectRef) {
+    throw new Error("This authorization handle is bound to a different Framer project.");
+  }
+  projectAuthHandles.delete(authHandle);
+  return record.projectRef;
 }
 
 function sanitizeOutput(value, secrets = []) {
@@ -176,9 +203,13 @@ async function ensureFramerSkills(env, workDir) {
   await runCli(["setup"], { env, cwd: workDir, timeoutMs: 120_000 });
 }
 
-async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutMs = CLI_TIMEOUT_MS) {
+async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutMs = CLI_TIMEOUT_MS, { useSavedAuth = false } = {}) {
   const projectRef = validateProjectRef(projectRefInput || process.env.FRAMER_PROJECT_URL);
-  const apiKey = validateProjectApiKey(projectApiKeyInput ?? defaultApiKey());
+  const keyInput = projectApiKeyInput ?? defaultApiKey();
+  const apiKey = keyInput ? validateProjectApiKey(keyInput) : undefined;
+  if (!apiKey && !useSavedAuth) {
+    throw new Error(`${SETUP_GUIDE}\n\nMissing projectApiKey or valid authorization handle.`);
+  }
   const configHome = path.join(STATE_ROOT, "config");
   const stateHome = path.join(STATE_ROOT, "state");
   const workDir = path.join(STATE_ROOT, "work", crypto.createHash("sha256").update(projectRef).digest("hex").slice(0, 20));
@@ -199,14 +230,16 @@ async function executeFramer(projectRefInput, projectApiKeyInput, args, timeoutM
   await fs.mkdir(env.HOME, { recursive: true, mode: 0o700 });
 
   return serializeCli(async () => {
-    await runCli(["project", "auth", projectRef, apiKey], {
-      env,
-      cwd: workDir,
-      secrets: [apiKey],
-      timeoutMs: 30_000,
-    });
+    if (apiKey) {
+      await runCli(["project", "auth", projectRef, apiKey], {
+        env,
+        cwd: workDir,
+        secrets: [apiKey],
+        timeoutMs: 30_000,
+      });
+    }
     await ensureFramerSkills(env, workDir);
-    return runCli(args, { env, cwd: workDir, secrets: [apiKey], timeoutMs });
+    return runCli(args, { env, cwd: workDir, secrets: apiKey ? [apiKey] : [], timeoutMs });
   });
 }
 
@@ -219,9 +252,9 @@ const SETUP_GUIDE = [
   "1. Create a new thread for this project.",
   "2. Ask the user for this thread's project link: browser address bar, or app right-click project tab → Copy Project Link.",
   "3. Ask the user for this project's API key: Site Settings → General → API Keys.",
-  "4. Call framer_project_auth once with that thread's projectUrlOrId and projectApiKey.",
-  "5. Call framer_session_new once and reuse its sessionId for the whole thread.",
-  "If the Render free instance restarted, call framer_project_auth again for that thread.",
+  "4. Call framer_project_auth once with that thread's projectUrlOrId and projectApiKey; it returns a short-lived authHandle.",
+  "5. Pass the authHandle to framer_session_new once, then reuse its random sessionId for later operations without repeating the projectApiKey.",
+  "The authHandle expires after 15 minutes and is one-use. If the Render instance restarts, reauthorize and create a new session.",
 ].join("\n");
 
 const AUTH_EXAMPLE = JSON.stringify(
@@ -232,20 +265,25 @@ const AUTH_EXAMPLE = JSON.stringify(
   null,
   2
 );
+const SESSION_EXAMPLE = JSON.stringify(
+  { authHandle: "PASTE_AUTH_HANDLE_RETURNED_BY_FRAMER_PROJECT_AUTH" },
+  null,
+  2
+);
 
 const toolDefinitions = [
   {
     name: "framer_setup_guide",
     title: "Show per-project setup guide",
-    description: "Show any agent how to guide a user through per-project setup: new thread per project, project link, project API key, framer_project_auth, then framer_session_new. Call this before asking the user for credentials.",
+    description: "Show per-project setup: authorize with the project API key once, pass the returned short-lived authHandle to framer_session_new, then use the random sessionId for later calls without repeating the raw key. Call this before asking the user for credentials.",
     schema: z.object({}).strict(),
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    run: async () => `${SETUP_GUIDE}\n\nframer_project_auth example:\n${AUTH_EXAMPLE}`,
+    run: async () => `${SETUP_GUIDE}\n\nframer_project_auth example:\n${AUTH_EXAMPLE}\n\nframer_session_new example (use the returned authHandle):\n${SESSION_EXAMPLE}`,
   },
   {
     name: "framer_project_auth",
     title: "Authorize a Framer project",
-    description: "STEP 1 for any new project thread. Save this thread's Framer project credentials on the hosted CLI using the project's own API key. Guide the user first: new thread per project; project link from browser address bar or app right-click → Copy Project Link; API key from Site Settings → General → API Keys. Then call this once with that thread's projectUrlOrId and projectApiKey. Later calls in the same thread can omit projectApiKey. Example: {\"projectUrlOrId\": \"https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123\", \"projectApiKey\": \"PASTE_THIS_PROJECTS_API_KEY\"}.",
+    description: "STEP 1 for a project thread. Authorize the project with its own API key (Site Settings → General → API Keys). This saves the credential in the CLI's private state and returns a random one-use authHandle valid for 15 minutes. Pass that handle to framer_session_new; subsequent tools use the random sessionId capability, so the raw key need not be repeated. Example: {\"projectUrlOrId\": \"https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123\", \"projectApiKey\": \"PASTE_THIS_PROJECTS_API_KEY\"}.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500),
       projectApiKey: z.string().min(8).max(500),
@@ -279,28 +317,42 @@ const toolDefinitions = [
         secrets: [apiKey],
         timeoutMs: 30_000,
       }));
-      return output || `Project ${projectRef} authorized for this thread.`;
+      const authHandle = issueProjectAuthHandle(projectRef);
+      return JSON.stringify({
+        project: projectRef,
+        authorization: output || `Project ${projectRef} authorized.`,
+        authHandle,
+        expiresInSeconds: Math.floor(AUTH_HANDLE_TTL_MS / 1000),
+      });
     },
   },
   {
     name: "framer_session_new",
     title: "Create Framer agent session",
-    description: "STEP 2 for any new project thread. Create one reusable session for this thread's Framer project using the official @framer/agent CLI. Authorize the project first with framer_project_auth, or pass this thread's projectApiKey inline. Reuse the returned sessionId for every later tool call in the thread; do not create replacement sessions.",
+    description: "STEP 2. Create one reusable session. Pass the one-use authHandle returned by framer_project_auth (recommended), or pass projectApiKey inline. The returned random sessionId is a bearer capability bound to that project; reuse it for later calls without repeating the raw key.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500).optional(),
       projectApiKey: z.string().min(8).max(500).optional(),
+      authHandle: z.string().min(40).max(128).optional(),
     }).strict(),
     inputSchema: {
       type: "object",
       properties: {
         projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured. If the user has not authorized this project yet, guide them with framer_setup_guide first." },
-        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This thread's project API key. Required unless framer_project_auth was already called for it in this thread." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "Optional inline key for this project; use authHandle instead to avoid repeating the raw key." },
+        authHandle: { type: "string", minLength: 40, maxLength: 128, description: "One-use, short-lived handle returned by framer_project_auth. It is bound to one project and expires in 15 minutes." },
       },
       additionalProperties: false,
     },
-    run: async ({ projectUrlOrId, projectApiKey }) => {
-      const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
-      const output = await executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["session", "new", projectRef]);
+    run: async ({ projectUrlOrId, projectApiKey, authHandle }) => {
+      const keyInput = projectApiKey ?? defaultApiKey();
+      const projectRef = authHandle
+        ? consumeProjectAuthHandle(authHandle, projectUrlOrId)
+        : validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
+      if (!keyInput && !authHandle) {
+        throw new Error(`${SETUP_GUIDE}\n\nPass the projectApiKey to framer_project_auth, then provide its authHandle here.`);
+      }
+      const output = await executeFramer(projectRef, keyInput, ["session", "new", projectRef], CLI_TIMEOUT_MS, { useSavedAuth: Boolean(authHandle) });
       const sessionId = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse()
         .find((line) => /^[A-Za-z0-9_-]{1,160}$/.test(line));
       if (!sessionId) throw new Error(`The CLI ran but its session ID could not be parsed. Output: ${output.slice(-2000)}`);
@@ -321,7 +373,7 @@ const toolDefinitions = [
       type: "object",
       properties: {
         projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
-        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "Optional key to reauthorize this project; after session creation, the random sessionId capability is sufficient." },
         sessionId: { type: "string", minLength: 8, maxLength: 160 },
         code: { type: "string", minLength: 1, maxLength: MAX_CODE_CHARS, description: "JavaScript code to execute through the Framer agent." },
       },
@@ -330,7 +382,7 @@ const toolDefinitions = [
     },
     run: async ({ projectUrlOrId, projectApiKey, sessionId, code }) => {
       const projectRef = projectRefForSession(sessionId, projectUrlOrId);
-      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["exec", "--session", resolveSessionId(sessionId), "--eval", code]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["exec", "--session", resolveSessionId(sessionId), "--eval", code], CLI_TIMEOUT_MS, { useSavedAuth: true });
     },
   },
   {
@@ -348,7 +400,7 @@ const toolDefinitions = [
       type: "object",
       properties: {
         projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
-        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "Optional key to reauthorize this project; after session creation, the random sessionId capability is sufficient." },
         sessionId: { type: "string", minLength: 8, maxLength: 160 },
         dsl: { type: "string", minLength: 1, maxLength: MAX_CODE_CHARS },
         pagePath: { type: "string", minLength: 1, maxLength: 2048, description: "Target page path; defaults to '/'." },
@@ -358,7 +410,7 @@ const toolDefinitions = [
     },
     run: async ({ projectUrlOrId, projectApiKey, sessionId, dsl, pagePath }) => {
       const projectRef = projectRefForSession(sessionId, projectUrlOrId);
-      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["apply-changes", "--session", resolveSessionId(sessionId), "--eval", dsl, "--page", pagePath || "/"]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["apply-changes", "--session", resolveSessionId(sessionId), "--eval", dsl, "--page", pagePath || "/"], CLI_TIMEOUT_MS, { useSavedAuth: true });
     },
   },
   {
@@ -376,7 +428,7 @@ const toolDefinitions = [
       type: "object",
       properties: {
         projectUrlOrId: { type: "string", minLength: 1, maxLength: 500, description: "This thread's Framer project URL or project ID; defaults to FRAMER_PROJECT_URL if configured." },
-        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "This project's Framer API key. Required unless framer_project_auth was already called for it." },
+        projectApiKey: { type: "string", minLength: 8, maxLength: 500, description: "Optional key to reauthorize this project; after session creation, the random sessionId capability is sufficient." },
         sessionId: { type: "string", minLength: 8, maxLength: 160 },
         queries: { type: "string", minLength: 2, maxLength: 50_000, description: "JSON array of Framer project query objects." },
         pagePath: { type: "string", minLength: 1, maxLength: 2048, description: "Target page path; defaults to '/'." },
@@ -393,7 +445,7 @@ const toolDefinitions = [
         throw new Error("queries must be valid JSON.");
       }
       if (!Array.isArray(parsed)) throw new Error("queries must be a JSON array.");
-      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["read-project", "--session", resolveSessionId(sessionId), "--queries", JSON.stringify(parsed), "--page", pagePath || "/"]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["read-project", "--session", resolveSessionId(sessionId), "--queries", JSON.stringify(parsed), "--page", pagePath || "/"], CLI_TIMEOUT_MS, { useSavedAuth: true });
     },
   },
   {
@@ -409,7 +461,7 @@ const toolDefinitions = [
     },
     run: async ({ sessionId }) => {
       const clientSessionId = validateSessionId(sessionId);
-      const relaySessionId = sessionIdAliases.get(clientSessionId)?.relayId || clientSessionId;
+      const relaySessionId = getSessionContext(clientSessionId).relayId;
       const configHome = path.join(STATE_ROOT, "config");
       const stateHome = path.join(STATE_ROOT, "state");
       const workDir = path.join(STATE_ROOT, "work");

@@ -24,10 +24,10 @@ Each thread handles exactly one Framer project.
    - Browser: copy the address bar with the project open.
    - App: right-click the project tab, then choose "Copy Project Link".
 3. Ask the user for that project's API key from Site Settings → General → API Keys.
-4. Call `framer_project_auth` once with that thread's `projectUrlOrId` and `projectApiKey`.
-5. Reuse the hosted session for every later task in the same thread.
+4. Call `framer_project_auth` once with that thread's `projectUrlOrId` and `projectApiKey`; retain its returned one-use `authHandle`.
+5. Pass `authHandle` to `framer_session_new`. Reuse the returned random `sessionId` for later operations; those calls do not need the raw project key or project URL.
 
-Never reuse one thread, session, or API key across different Framer projects. If the Render free instance restarts, call `framer_project_auth` again for that thread.
+Never reuse one thread, authHandle, session, or API key across different Framer projects. The authHandle expires after 15 minutes and is consumed when creating a session. If the Render instance restarts, call `framer_project_auth` again and create a new session.
 
 ## Workflow
 
@@ -49,13 +49,15 @@ Call `framer_project_auth` first in every thread. Replace the placeholders with 
 }
 ```
 
-Expected result: the hosted CLI saves that project's credential (equivalent to `project auth <projectUrlOrId> <apiKey>`), so later calls in the same thread can omit `projectApiKey`. Then create the reusable session:
+Expected result: the hosted CLI authorizes the project and returns a short-lived opaque `authHandle` (never the key). Pass it once to create the reusable session:
 
 ```json
 {
-  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123"
+  "authHandle": "PASTE_AUTH_HANDLE_RETURNED_BY_FRAMER_PROJECT_AUTH"
 }
 ```
+
+The returned random `sessionId` is the capability for follow-up calls. It is bound to the authorized project; do not share it. It remains valid only while the current hosted server process retains its session map.
 
 ## Tool Selection
 

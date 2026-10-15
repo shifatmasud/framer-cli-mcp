@@ -20,7 +20,7 @@ Set these in the Render service's environment settings; do not commit them:
 - `FRAMER_PROJECT_URL` (optional): default project URL/ID for tool calls in a single-project setup.
 - `PORT`: Render provides this; the image defaults to `10000`.
 
-The MCP endpoint is `https://<service>.onrender.com/mcp`; health is available at `/healthz`. No bearer token is required. Each Framer project key is passed per thread through `framer_project_auth` or the tool's `projectApiKey` argument.
+The MCP endpoint is `https://<service>.onrender.com/mcp`; health is available at `/healthz`. The endpoint itself does not require a shared bearer token. Project access is authorized once by `framer_project_auth`; a short-lived opaque handle creates the session, and the random session ID then acts as a project-bound capability.
 
 ## Per-project setup
 
@@ -29,10 +29,12 @@ Create a new thread for each Framer project, then copy that project's link:
 - Browser: copy the address bar when the project is open.
 - App: right-click the project tab, then choose "Copy Project Link".
 
-Then authorize that project once in the thread:
+Authorize the project once in the thread:
 
 - `framer_project_auth` with that thread's `projectUrlOrId` and `projectApiKey` (Site Settings → General → API Keys).
-- Later tools in the same thread can omit `projectApiKey`; the hosted CLI reuses the saved project credential.
+- It returns a random, one-use `authHandle`, valid for 15 minutes. Pass that handle to `framer_session_new` instead of repeating the raw key.
+- `framer_session_new` returns a random session ID bound to that project. Later `framer_exec`, `framer_read_project`, and `framer_apply_changes` calls use that session ID and can omit both the key and project URL.
+- Handles are in-memory capabilities: if the Render instance restarts, reauthorize the project and create a new session.
 
 Example `framer_project_auth` call (replace both placeholders):
 
@@ -43,24 +45,24 @@ Example `framer_project_auth` call (replace both placeholders):
 }
 ```
 
-Then create the thread's reusable session:
+Create the thread's reusable session with the returned handle:
 
 ```json
 {
-  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123"
+  "authHandle": "PASTE_AUTH_HANDLE_RETURNED_BY_FRAMER_PROJECT_AUTH"
 }
 ```
 
-Inline-key fallback for any tool (for example after a Render restart):
+Inline-key fallback for session creation (for example after a Render restart):
 
 ```json
 {
   "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123",
-  "projectApiKey": "PASTE_THIS_PROJECTS_API_KEY",
-  "sessionId": "PASTE_SESSION_ID",
-  "code": "console.log(await framer.getProjectInfo())"
+  "projectApiKey": "PASTE_THIS_PROJECTS_API_KEY"
 }
 ```
+
+When using the normal auth-handle flow, session-bound operations must use the returned random `sessionId`. This opaque capability replaces repeating the project API key; it is not the Framer API key and is invalidated when the server process restarts.
 
 ## Tools
 
