@@ -72,6 +72,43 @@ function validateSessionId(value) {
   return sessionId;
 }
 
+// The relay assigns short session IDs (e.g. "1"), but MCP clients validate
+// sessionId with a minimum length of 8. Issue a stable >=8-char alias per
+// session and map it back to the relay ID for CLI calls.
+const sessionIdAliases = new Map();
+
+function toClientSessionId(relaySessionId, projectRef) {
+  const id = String(relaySessionId || "").trim();
+  if (/^[A-Za-z0-9_-]{8,160}$/.test(id) && !id.startsWith("-")) {
+    sessionIdAliases.set(id, { relayId: id, projectRef });
+    return id;
+  }
+  // Do not expose the relay's short, often sequential IDs as bearer tokens.
+  const alias = `sess_${crypto.randomBytes(16).toString("hex")}`;
+  sessionIdAliases.set(alias, { relayId: id, projectRef });
+  return alias;
+}
+
+function resolveSessionId(value) {
+  const sessionId = validateSessionId(value);
+  return sessionIdAliases.get(sessionId)?.relayId || sessionId;
+}
+
+// Later calls in a thread may omit projectUrlOrId; the session knows its project.
+function projectForSession(value) {
+  const sessionId = validateSessionId(value);
+  return sessionIdAliases.get(sessionId)?.projectRef;
+}
+
+function projectRefForSession(sessionId, requestedProjectRef) {
+  const boundProjectRef = projectForSession(sessionId);
+  const projectRef = validateProjectRef(requestedProjectRef || boundProjectRef || process.env.FRAMER_PROJECT_URL);
+  if (boundProjectRef && projectRef !== boundProjectRef) {
+    throw new Error("This session is bound to a different Framer project.");
+  }
+  return projectRef;
+}
+
 function sanitizeOutput(value, secrets = []) {
   let text = String(value || "");
   for (const secret of secrets) {
@@ -265,9 +302,9 @@ const toolDefinitions = [
       const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
       const output = await executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["session", "new", projectRef]);
       const sessionId = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse()
-        .find((line) => /^[A-Za-z0-9_-]{8,160}$/.test(line));
+        .find((line) => /^[A-Za-z0-9_-]{1,160}$/.test(line));
       if (!sessionId) throw new Error(`The CLI ran but its session ID could not be parsed. Output: ${output.slice(-2000)}`);
-      return JSON.stringify({ sessionId, project: projectRef });
+      return JSON.stringify({ sessionId: toClientSessionId(sessionId, projectRef), project: projectRef });
     },
   },
   {
@@ -292,8 +329,8 @@ const toolDefinitions = [
       additionalProperties: false,
     },
     run: async ({ projectUrlOrId, projectApiKey, sessionId, code }) => {
-      const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
-      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["exec", "--session", validateSessionId(sessionId), "--eval", code]);
+      const projectRef = projectRefForSession(sessionId, projectUrlOrId);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["exec", "--session", resolveSessionId(sessionId), "--eval", code]);
     },
   },
   {
@@ -320,8 +357,8 @@ const toolDefinitions = [
       additionalProperties: false,
     },
     run: async ({ projectUrlOrId, projectApiKey, sessionId, dsl, pagePath }) => {
-      const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
-      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["apply-changes", "--session", validateSessionId(sessionId), "--eval", dsl, "--page", pagePath || "/"]);
+      const projectRef = projectRefForSession(sessionId, projectUrlOrId);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["apply-changes", "--session", resolveSessionId(sessionId), "--eval", dsl, "--page", pagePath || "/"]);
     },
   },
   {
@@ -348,7 +385,7 @@ const toolDefinitions = [
       additionalProperties: false,
     },
     run: async ({ projectUrlOrId, projectApiKey, sessionId, queries, pagePath }) => {
-      const projectRef = validateProjectRef(projectUrlOrId || process.env.FRAMER_PROJECT_URL);
+      const projectRef = projectRefForSession(sessionId, projectUrlOrId);
       let parsed;
       try {
         parsed = JSON.parse(queries);
@@ -356,7 +393,7 @@ const toolDefinitions = [
         throw new Error("queries must be valid JSON.");
       }
       if (!Array.isArray(parsed)) throw new Error("queries must be a JSON array.");
-      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["read-project", "--session", validateSessionId(sessionId), "--queries", JSON.stringify(parsed), "--page", pagePath || "/"]);
+      return executeFramer(projectRef, projectApiKey ?? defaultApiKey(), ["read-project", "--session", resolveSessionId(sessionId), "--queries", JSON.stringify(parsed), "--page", pagePath || "/"]);
     },
   },
   {
@@ -371,6 +408,8 @@ const toolDefinitions = [
       additionalProperties: false,
     },
     run: async ({ sessionId }) => {
+      const clientSessionId = validateSessionId(sessionId);
+      const relaySessionId = sessionIdAliases.get(clientSessionId)?.relayId || clientSessionId;
       const configHome = path.join(STATE_ROOT, "config");
       const stateHome = path.join(STATE_ROOT, "state");
       const workDir = path.join(STATE_ROOT, "work");
@@ -383,7 +422,8 @@ const toolDefinitions = [
       delete env.FRAMER_API_KEY;
       await fs.mkdir(env.HOME, { recursive: true, mode: 0o700 });
       return serializeCli(async () => {
-        const output = await runCli(["session", "destroy", validateSessionId(sessionId)], { env, cwd: workDir });
+        const output = await runCli(["session", "destroy", relaySessionId], { env, cwd: workDir });
+        sessionIdAliases.delete(clientSessionId);
         return output || `Session ${sessionId} destroyed.`;
       });
     },
