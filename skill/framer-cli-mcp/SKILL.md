@@ -15,49 +15,39 @@ No bearer token is required.
 
 About this server: official `@framer/agent` CLI v0.0.46 on Node 24 in Docker; stateless Streamable HTTP MCP endpoint; per-project API keys (no shared server key); CLI runs as a shell-free subprocess with serialized calls; project credentials live in ephemeral `/tmp` with restrictive permissions; Render Free plan in Singapore (sleeps when idle, filesystem resets on restart); source and skill hosted at `https://github.com/shifatmasud/framer-cli-mcp`; every push to `main` auto-deploys to Render.
 
-## Per-Project Rule
+## Project Setup — Server Defaults First
 
-Each thread handles exactly one Framer project.
+Each thread should work against exactly one Framer project. **Never ask the user to repeat credentials that are already configured server-side.**
 
-1. Create a new thread for each project.
-2. Ask the user for that thread's project link:
-   - Browser: copy the address bar with the project open.
-   - App: right-click the project tab, then choose "Copy Project Link".
-3. Ask the user for that project's API key from Site Settings → General → API Keys.
-4. Call `framer_project_auth` once with that thread's `projectUrlOrId` and `projectApiKey`; retain its returned one-use `authHandle`.
-5. Pass `authHandle` to `framer_session_new`. Reuse the returned random `sessionId` for later operations; those calls do not need the raw project key or project URL.
+1. Call `framer_setup_guide` first.
+2. If both `FRAMER_PROJECT_URL` and `FRAMER_API_KEY` are configured, call `framer_session_new` with empty arguments `{}`. Do not ask for the URL or key. Reuse the returned `sessionId` for all reads, edits, diagnostics, and publishing in this thread.
+3. If only one server default exists, use it and request only the missing detail.
+4. If no defaults exist, ask for the project's URL and API key, call `framer_project_auth`, then pass its one-use `authHandle` to `framer_session_new`.
+5. If the user explicitly requests a different project, use that project's credentials rather than the configured defaults.
+6. If the hosted server restarts and the session is lost, create a fresh session; with server defaults, call `framer_session_new` with `{}` again.
 
-Never reuse one thread, authHandle, session, or API key across different Framer projects. The authHandle expires after 15 minutes and is consumed when creating a session. If the Render instance restarts, call `framer_project_auth` again and create a new session.
+Keep each session bound to one project. The authHandle expires after 15 minutes and is consumed when creating a session.
 
 ## Workflow
 
-1. Call `framer_setup_guide` and follow its per-project script before asking for credentials.
-2. Authorize the thread's project with `framer_project_auth`.
-3. Create one session with `framer_session_new` and reuse its session ID for the whole thread.
+1. Call `framer_setup_guide` to detect server-side defaults.
+2. If both defaults are configured, call `framer_session_new` with `{}`; otherwise authorize only the missing project details.
+3. Reuse one session ID for the entire thread.
 4. For details on methods, queries, DSL shape, and safety rules, read [Framer tool reference](references/framer-tools.md).
 5. For deployment, hosting, environment variables, and troubleshooting, read [hosting reference](references/hosting.md).
 6. Destroy the session with `framer_session_destroy` only when the thread's Framer work is finished.
 
 ## Authentication Example
 
-Call `framer_project_auth` first in every thread. Replace the placeholders with that thread's project link and that project's key from Site Settings → General → API Keys.
+When server-side defaults are configured, the normal flow is simply:
 
 ```json
-{
-  "projectUrlOrId": "https://framer.com/projects/PASTE_THIS_THREADS_PROJECT_ID--abc123",
-  "projectApiKey": "PASTE_THIS_PROJECTS_API_KEY"
-}
+{}
 ```
 
-Expected result: the hosted CLI authorizes the project and returns a short-lived opaque `authHandle` (never the key). Pass it once to create the reusable session:
+Call `framer_session_new` with that empty object. Do not ask the user to paste the configured URL or API key.
 
-```json
-{
-  "authHandle": "PASTE_AUTH_HANDLE_RETURNED_BY_FRAMER_PROJECT_AUTH"
-}
-```
-
-The returned random `sessionId` is the capability for follow-up calls. It is bound to the authorized project; do not share it. It remains valid only while the current hosted server process retains its session map.
+Only use the per-project authorization flow when no defaults are configured or the user explicitly asks for a different project. In that case, call `framer_project_auth` with the project URL and API key, then pass the returned `authHandle` to `framer_session_new`. The returned random `sessionId` is the capability for follow-up calls; keep it private.
 
 ## Tool Selection
 

@@ -16,8 +16,10 @@ A remote Streamable HTTP MCP server that invokes Framer's official `@framer/agen
 
 Set these in the Render service's environment settings; do not commit them:
 
-- `FRAMER_API_KEY` (optional): a default project API key, only if every call targets one project.
-- `FRAMER_PROJECT_URL` (optional): default project URL/ID for tool calls in a single-project setup.
+- `FRAMER_API_KEY` (optional): a default project API key for a single-project setup.
+- `FRAMER_PROJECT_URL` (optional): default project URL/ID for a single-project setup.
+
+**Agent behavior when defaults are configured:** if both variables are present, call `framer_session_new` with an empty object (`{}`). Do not ask the user to repeat the server-side project URL or API key. Reuse that returned `sessionId` for the entire task. If only one variable is set, use it and request only the missing value. The MCP setup guide and tool descriptions detect and explain this at runtime.
 - `PORT`: Render provides this; the image defaults to `10000`.
 
 The MCP endpoint is `https://<service>.onrender.com/mcp`; health is available at `/healthz`. The endpoint itself does not require a shared bearer token. Project access is authorized once by `framer_project_auth`; a short-lived opaque handle creates the session, and the random session ID then acts as a project-bound capability.
@@ -66,7 +68,7 @@ When using the normal auth-handle flow, session-bound operations must use the re
 
 ## Tools
 
-- `framer_setup_guide`: returns the per-project setup script any agent should follow before asking for credentials.
+- `framer_setup_guide`: detects server-side defaults and tells agents whether to create a session directly or request only missing details.
 - `framer_project_auth`: authorize this thread's project with its own API key.
 - `framer_session_new`: create a session for a project.
 - `framer_exec`: run JavaScript through the Framer agent's generic CLI `exec` command.

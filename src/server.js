@@ -247,15 +247,32 @@ function resultText(text, isError = false) {
   return { content: [{ type: "text", text: String(text) }], ...(isError ? { isError: true } : {}) };
 }
 
-const SETUP_GUIDE = [
-  "Per-project setup (one thread per Framer project):",
-  "1. Create a new thread for this project.",
-  "2. Ask the user for this thread's project link: browser address bar, or app right-click project tab → Copy Project Link.",
-  "3. Ask the user for this project's API key: Site Settings → General → API Keys.",
-  "4. Call framer_project_auth once with that thread's projectUrlOrId and projectApiKey; it returns a short-lived authHandle.",
-  "5. Pass the authHandle to framer_session_new once, then reuse its random sessionId for later operations without repeating the projectApiKey.",
-  "The authHandle expires after 15 minutes and is one-use. If the Render instance restarts, reauthorize and create a new session.",
-].join("\n");
+const hasDefaultProject = Boolean(String(process.env.FRAMER_PROJECT_URL || "").trim());
+const hasDefaultApiKey = Boolean(String(process.env.FRAMER_API_KEY || "").trim());
+const hasCompleteServerAuth = hasDefaultProject && hasDefaultApiKey;
+
+const SETUP_GUIDE = hasCompleteServerAuth
+  ? [
+      "Server-side Framer project defaults are configured for this MCP server.",
+      "IMPORTANT: Do not ask the user to paste the project URL or API key when working on the configured project.",
+      "Create a session by calling framer_session_new with empty arguments {}. The server supplies FRAMER_PROJECT_URL and FRAMER_API_KEY.",
+      "Reuse the returned sessionId for all reads, edits, diagnostics, and publishing in this thread; do not create a new session for each operation.",
+      "If the session expires after a server restart, call framer_session_new with {} again.",
+      "Only request another project's URL/key if the user explicitly asks to work on a different project.",
+    ].join("\\n")
+  : [
+      "Framer project setup (one project per thread):",
+      "Check configured server-side defaults before asking the user for any credential.",
+      hasDefaultProject
+        ? "FRAMER_PROJECT_URL is configured; do not ask for the project URL. Ask only for an API key if FRAMER_API_KEY is absent."
+        : "FRAMER_PROJECT_URL is not configured; ask for the Framer project URL/ID if the user has not supplied it.",
+      hasDefaultApiKey
+        ? "FRAMER_API_KEY is configured; do not ask for the API key."
+        : "FRAMER_API_KEY is not configured; ask for the project's API key only if it is needed.",
+      "Use the configured defaults and any user-provided project details to fill only the missing values.",
+      "Authorize with framer_project_auth, then pass its one-use authHandle to framer_session_new. Reuse the returned sessionId for later operations.",
+      "The authHandle expires after 15 minutes and is one-use. If the server restarts, create a fresh session.",
+    ].join("\\n");
 
 const AUTH_EXAMPLE = JSON.stringify(
   {
@@ -275,7 +292,7 @@ const toolDefinitions = [
   {
     name: "framer_setup_guide",
     title: "Show per-project setup guide",
-    description: "Show per-project setup: authorize with the project API key once, pass the returned short-lived authHandle to framer_session_new, then use the random sessionId for later calls without repeating the raw key. Call this before asking the user for credentials.",
+    description: "Read the server-aware setup guide before asking for credentials. It detects whether FRAMER_PROJECT_URL and FRAMER_API_KEY are configured; when both exist, call framer_session_new with {} directly and do not ask the user to repeat either secret.",
     schema: z.object({}).strict(),
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     run: async () => `${SETUP_GUIDE}\n\nframer_project_auth example:\n${AUTH_EXAMPLE}\n\nframer_session_new example (use the returned authHandle):\n${SESSION_EXAMPLE}`,
@@ -329,7 +346,7 @@ const toolDefinitions = [
   {
     name: "framer_session_new",
     title: "Create Framer agent session",
-    description: "STEP 2. Create one reusable session. Pass the one-use authHandle returned by framer_project_auth (recommended), or pass projectApiKey inline. The returned random sessionId is a bearer capability bound to that project; reuse it for later calls without repeating the raw key.",
+    description: "Create one reusable Framer session. If server-side FRAMER_PROJECT_URL and FRAMER_API_KEY are configured, call this tool with empty arguments {}: the server will use those defaults, so do not ask the user to provide either secret. Otherwise use configured defaults for any supplied values and pass an authHandle or only the missing project details. Reuse the returned project-bound sessionId for all operations in this thread.",
     schema: z.object({
       projectUrlOrId: z.string().min(1).max(500).optional(),
       projectApiKey: z.string().min(8).max(500).optional(),
