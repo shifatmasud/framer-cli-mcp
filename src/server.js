@@ -259,7 +259,7 @@ const SETUP_GUIDE = hasCompleteServerAuth
       "Reuse the returned sessionId for all reads, edits, diagnostics, and publishing in this thread; do not create a new session for each operation.",
       "If the session expires after a server restart, call framer_session_new with {} again.",
       "Only request another project's URL/key if the user explicitly asks to work on a different project.",
-    ].join("\\n")
+    ].join("\n")
   : [
       "Framer project setup (one project per thread):",
       "Check configured server-side defaults before asking the user for any credential.",
@@ -272,7 +272,7 @@ const SETUP_GUIDE = hasCompleteServerAuth
       "Use the configured defaults and any user-provided project details to fill only the missing values.",
       "Authorize with framer_project_auth, then pass its one-use authHandle to framer_session_new. Reuse the returned sessionId for later operations.",
       "The authHandle expires after 15 minutes and is one-use. If the server restarts, create a fresh session.",
-    ].join("\\n");
+    ].join("\n");
 
 const AUTH_EXAMPLE = JSON.stringify(
   {
